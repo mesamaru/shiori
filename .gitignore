@@ -1,0 +1,16 @@
+# 依存パッケージ
+node_modules/
+
+# 環境変数（トークン・パスワード・APIキーが入るため絶対にコミットしない）
+.env
+.env.local
+.env.*.local
+
+# 配布用アーカイブ
+*.zip
+
+# ログ・一時ファイル
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db

@@ -1,0 +1,19 @@
+{
+  "name": "discord-to-ai",
+  "version": "1.0.0",
+  "description": "栞 (Shiori) — Discordの会話に目印を挟み、タスクとして拾い上げるBot",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.120.0",
+    "cookie-session": "^2.1.1",
+    "discord.js": "^14.15.3",
+    "dotenv": "^16.4.5",
+    "express": "^5.2.1",
+    "ioredis": "^5.4.1",
+    "mysql2": "^3.11.0",
+    "zod": "^4.4.3"
+  }
+}
