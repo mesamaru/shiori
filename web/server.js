@@ -14,6 +14,8 @@
 // 平文HTTPで外部公開するとパスワードが盗聴されるため、必ずHTTPS経由で公開すること。
 
 const crypto = require('crypto');
+const path = require('path');
+const fs = require('fs');
 const express = require('express');
 const cookieSession = require('cookie-session');
 const {
@@ -29,6 +31,7 @@ const {
   STATUS_ORDER,
 } = require('./render');
 const auth = require('./auth');
+const { startExport, cancelExport, getExportState, exportsDir } = require('./export');
 
 const VALID_STATUSES = new Set(STATUS_ORDER);
 const VALID_NOTES_FORMATS = new Set(['plain', 'markdown']);
@@ -53,7 +56,11 @@ async function listGuildMembers(discordClient) {
       for (const m of members.values()) {
         if (m.user.bot) continue; // Bot自身は担当者候補にしない
         if (!byId.has(m.id)) {
-          byId.set(m.id, { id: m.id, name: m.displayName || m.user.username });
+          byId.set(m.id, {
+            id: m.id,
+            name: m.displayName || m.user.username,
+            avatar: m.displayAvatarURL({ extension: 'png', size: 32 }),
+          });
         }
       }
     } catch (err) {
@@ -133,6 +140,10 @@ async function startWebServer(dbPool, discordClient) {
   if (behindProxy) app.set('trust proxy', 1);
   app.disable('x-powered-by');
 
+  // 担当者ピッカー用の静的JS。認証不要でよい内容（秘密情報を含まない）なので
+  // ログイン前でも配信する。
+  app.use(express.static(path.join(__dirname, 'public'), { index: false, maxAge: '1h' }));
+
   app.use(express.urlencoded({ extended: false, limit: '64kb' }));
   app.use(
     cookieSession({
@@ -149,10 +160,13 @@ async function startWebServer(dbPool, discordClient) {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-Frame-Options', 'DENY');
     res.setHeader('Referrer-Policy', 'same-origin');
-    // アバター画像のためDiscordのCDNだけ許可する（スクリプトは一切許可しない）
+    // アバター画像のためDiscordのCDNだけ許可する。
+    // scriptは 'self' の静的ファイルのみ許可（インラインscript・外部CDN・evalは一切不可）。
+    // ユーザー入力（タスク名・メモ等）がscriptタグとして解釈される経路は無いため、
+    // 自前の静的JSを許可してもXSSリスクは増えない。
     res.setHeader(
       'Content-Security-Policy',
-      "default-src 'none'; style-src 'unsafe-inline'; " +
+      "default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; " +
         "img-src 'self' data: https://cdn.discordapp.com; " +
         "form-action 'self'; frame-ancestors 'none'"
     );
@@ -689,21 +703,23 @@ async function startWebServer(dbPool, discordClient) {
                     </div>
                     <div class="field">
                       <label>担当者</label>
-                      <select name="assignee_id">
-                        <option value="">未定</option>
-                        ${members
-                          .map(
-                            (m) =>
-                              `<option value="${escapeHtml(m.id)}"${m.id === task.assignee_id ? ' selected' : ''}>${escapeHtml(m.name)}</option>`
-                          )
-                          .join('')}
-                        ${
-                          // 現在の担当者がサーバーを抜けている等でリストに無い場合、選択が消えないよう追加しておく
-                          task.assignee_id && !members.some((m) => m.id === task.assignee_id)
-                            ? `<option value="${escapeHtml(task.assignee_id)}" selected>${escapeHtml(task.assignee_id)}（サーバーに見つかりません）</option>`
-                            : ''
-                        }
-                      </select>
+                      <div class="assignee-picker" data-members="${escapeHtml(JSON.stringify(members))}">
+                        <select name="assignee_id" class="assignee-native">
+                          <option value="">未定</option>
+                          ${members
+                            .map(
+                              (m) =>
+                                `<option value="${escapeHtml(m.id)}"${m.id === task.assignee_id ? ' selected' : ''}>${escapeHtml(m.name)}</option>`
+                            )
+                            .join('')}
+                          ${
+                            // 現在の担当者がサーバーを抜けている等でリストに無い場合、選択が消えないよう追加しておく
+                            task.assignee_id && !members.some((m) => m.id === task.assignee_id)
+                              ? `<option value="${escapeHtml(task.assignee_id)}" selected>${escapeHtml(task.assignee_id)}（サーバーに見つかりません）</option>`
+                              : ''
+                          }
+                        </select>
+                      </div>
                     </div>
                   </div>
 
@@ -1241,6 +1257,103 @@ async function startWebServer(dbPool, discordClient) {
     } catch (err) {
       next(err);
     }
+  });
+
+  // --- チャット全履歴のCSVエクスポート（管理者のみ） ---
+
+  function exportStatusBody(state, csrf) {
+    if (state.status === 'idle') {
+      return `<div class="card"><div class="body">
+        <p class="muted" style="margin-top:0">
+          Botが参加している全サーバーの全チャンネル（スレッド含む）から、
+          取得できるすべてのメッセージをCSVとして書き出します。
+          サーバーの規模によっては数分〜数時間かかることがあります。
+        </p>
+        <form method="post" action="/export/start">
+          <input type="hidden" name="_csrf" value="${escapeHtml(csrf)}">
+          <button type="submit">エクスポートを開始</button>
+        </form>
+      </div></div>`;
+    }
+
+    if (state.status === 'running') {
+      return `<div class="card"><div class="body">
+        <p>実行中… チャンネル ${state.processedChannels}/${state.totalChannels || '?'} ／ メッセージ ${state.processedMessages}件</p>
+        <p class="muted">現在処理中: ${escapeHtml(state.currentChannelName || '')}</p>
+        <form method="post" action="/export/cancel">
+          <input type="hidden" name="_csrf" value="${escapeHtml(csrf)}">
+          <button class="ghost" type="submit">中断</button>
+        </form>
+        <p class="muted" style="margin-top:10px;margin-bottom:0">このページは5秒ごとに自動更新されます。</p>
+      </div></div>`;
+    }
+
+    if (state.status === 'done' || state.status === 'cancelled') {
+      return `<div class="card"><div class="body">
+        <p style="margin-top:0">${state.status === 'done' ? '完了しました。' : '中断されました（それまでの分は保存されています）。'}</p>
+        <p>メッセージ ${state.processedMessages}件 ／ チャンネル ${state.processedChannels}件</p>
+        ${
+          state.errors.length > 0
+            ? `<p class="muted">一部のチャンネルは取得できませんでした（権限不足など）: ${state.errors.length}件</p>`
+            : ''
+        }
+        <p><a class="link" href="/export/download/${escapeHtml(state.resultFile)}">CSVをダウンロード</a></p>
+        <form method="post" action="/export/start" style="margin:0">
+          <input type="hidden" name="_csrf" value="${escapeHtml(csrf)}">
+          <button type="submit">もう一度実行</button>
+        </form>
+      </div></div>`;
+    }
+
+    // error
+    return `<div class="card"><div class="body">
+      <div class="error" style="margin:0 0 12px">${escapeHtml(state.error || '不明なエラーが発生しました。')}</div>
+      <form method="post" action="/export/start" style="margin:0">
+        <input type="hidden" name="_csrf" value="${escapeHtml(csrf)}">
+        <button type="submit">再試行</button>
+      </form>
+    </div></div>`;
+  }
+
+  app.get('/export', requireAdmin, async (req, res, next) => {
+    try {
+      const nav = await loadNav();
+      const state = getExportState();
+
+      res.type('html').send(
+        layout({
+          title: 'チャット履歴エクスポート',
+          active: 'export',
+          nav,
+          me: req.user,
+          csrfToken: req.session.csrf,
+          extraHead: state.status === 'running' ? '<meta http-equiv="refresh" content="5">' : '',
+          body: exportStatusBody(state, req.session.csrf),
+        })
+      );
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.post('/export/start', requireAdmin, (req, res) => {
+    startExport(discordClient);
+    res.redirect('/export');
+  });
+
+  app.post('/export/cancel', requireAdmin, (req, res) => {
+    cancelExport();
+    res.redirect('/export');
+  });
+
+  app.get('/export/download/:file', requireAdmin, (req, res) => {
+    // 生成したファイル名のパターンのみ許可（パストラバーサル対策）
+    if (!/^shiori-export-\d{8}-\d{6}\.csv$/.test(req.params.file)) {
+      return res.status(400).send('Bad request');
+    }
+    const filePath = path.join(exportsDir(), req.params.file);
+    if (!fs.existsSync(filePath)) return res.status(404).send('Not found');
+    res.download(filePath);
   });
 
   // --- ユーザー管理（管理者のみ） ---

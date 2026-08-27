@@ -356,6 +356,35 @@ label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 5px
 .notes-html a { color: var(--accent); text-decoration: underline; }
 .notes-empty { color: var(--muted); font-size: 13.5px; }
 
+/* --- 担当者ピッカー（app.jsによるプログレッシブエンハンスメント） --- */
+select.assignee-native[hidden] { display: none; }
+.apick { position: relative; }
+.apick-trigger {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  background: var(--surface-2); border: 1px solid var(--border); color: var(--text);
+  border-radius: 8px; padding: 7px 11px; font-size: 14px; font-family: inherit; cursor: pointer;
+}
+.apick-trigger:hover { border-color: var(--accent); }
+.apick-avatar {
+  width: 20px; height: 20px; border-radius: 50%; flex-shrink: 0;
+  background-size: cover; background-position: center; background-color: var(--surface);
+}
+.apick-avatar-sm { width: 18px; height: 18px; }
+.apick-avatar-empty { border: 1px dashed var(--border); }
+.apick-panel {
+  position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 20;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.18); padding: 8px;
+}
+.apick-search { margin-bottom: 6px; }
+.apick-list { list-style: none; margin: 0; padding: 0; max-height: 220px; overflow-y: auto; }
+.apick-row {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  background: transparent; border: none; color: var(--text);
+  padding: 7px 8px; border-radius: 6px; font-size: 13.5px; text-align: left; cursor: pointer;
+}
+.apick-row:hover { background: var(--surface-2); }
+
 /* --- モバイル --- */
 @media (max-width: 820px) {
   .shell { flex-direction: column; }
@@ -466,6 +495,7 @@ function sidebar({ active, projects, counts, openClarifications, me }) {
       <div class="side-title">Discord</div>
       ${view('/clarifications', '?', '確認事項', openClarifications || null, 'clarifications')}
       ${view('/channels', '#', '監視チャンネル', null, 'channels')}
+      ${me?.role === 'admin' ? view('/export', '⇩', 'エクスポート', null, 'export') : ''}
     </div>
 
     <div class="side-group">
@@ -487,7 +517,7 @@ function sidebar({ active, projects, counts, openClarifications, me }) {
 /**
  * 共通レイアウト
  */
-function layout({ title, subtitle, active, body, notice, error, nav, csrfToken, actions, me }) {
+function layout({ title, subtitle, active, body, notice, error, nav, csrfToken, actions, me, extraHead }) {
   const side = sidebar({ ...nav, active, me }).replace('__CSRF__', escapeHtml(csrfToken));
 
   return `<!doctype html>
@@ -498,6 +528,7 @@ function layout({ title, subtitle, active, body, notice, error, nav, csrfToken, 
 <meta name="color-scheme" content="light dark">
 <title>${escapeHtml(title)} · 栞</title>
 <style>${STYLES}</style>
+${extraHead ?? ''}
 </head>
 <body>
 <div class="shell">
@@ -514,6 +545,7 @@ function layout({ title, subtitle, active, body, notice, error, nav, csrfToken, 
     ${body}
   </div></div>
 </div>
+<script src="/app.js" defer></script>
 </body>
 </html>`;
 }

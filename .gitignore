@@ -9,6 +9,9 @@ node_modules/
 # 配布用アーカイブ
 *.zip
 
+# CSVエクスポートの出力先（チャット全履歴が入るため絶対にコミットしない）
+exports/
+
 # ログ・一時ファイル
 *.log
 npm-debug.log*
