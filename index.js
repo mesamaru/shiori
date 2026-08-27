@@ -56,6 +56,9 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
+    // Web管理画面でタスクの担当者をサーバーメンバー一覧から選べるようにするために必要。
+    // Discord Developer Portal側でも「SERVER MEMBERS INTENT」の有効化が別途必要（特権インテント）。
+    GatewayIntentBits.GuildMembers,
   ],
   partials: [Partials.Message, Partials.Channel],
 });

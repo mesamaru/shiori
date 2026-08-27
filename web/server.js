@@ -25,11 +25,46 @@ const {
   loginPage,
   taskList,
   whoChip,
+  renderNotes,
   STATUS_ORDER,
 } = require('./render');
 const auth = require('./auth');
 
 const VALID_STATUSES = new Set(STATUS_ORDER);
+const VALID_NOTES_FORMATS = new Set(['plain', 'markdown']);
+const NOTES_MAX_LENGTH = 20000;
+
+// --- Discordサーバーのメンバー一覧（担当者選択用） ---
+// guild.members.fetch() はAPIコストが軽くないため、短時間キャッシュする。
+const MEMBER_CACHE_MS = 5 * 60 * 1000;
+let memberCache = { at: 0, list: [] };
+
+/**
+ * Botが参加している全サーバーからメンバー一覧を取得する。
+ * Discord Developer Portal側で「SERVER MEMBERS INTENT」の有効化が必要。
+ */
+async function listGuildMembers(discordClient) {
+  if (Date.now() - memberCache.at < MEMBER_CACHE_MS) return memberCache.list;
+
+  const byId = new Map();
+  for (const guild of discordClient.guilds.cache.values()) {
+    try {
+      const members = await guild.members.fetch();
+      for (const m of members.values()) {
+        if (m.user.bot) continue; // Bot自身は担当者候補にしない
+        if (!byId.has(m.id)) {
+          byId.set(m.id, { id: m.id, name: m.displayName || m.user.username });
+        }
+      }
+    } catch (err) {
+      console.error(`[web] メンバー一覧の取得に失敗しました (guild: ${guild.id}):`, err.message);
+    }
+  }
+
+  const list = [...byId.values()].sort((a, b) => a.name.localeCompare(b.name, 'ja'));
+  memberCache = { at: Date.now(), list };
+  return list;
+}
 
 // --- ログイン試行制限 ---
 // 単一プロセスなのでメモリ上で管理する。プロセス再起動でリセットされるが、
@@ -588,6 +623,7 @@ async function startWebServer(dbPool, discordClient) {
 
       await attachAssignees([task]);
       const [projects] = await dbPool.query('SELECT id, name FROM projects ORDER BY name');
+      const members = await listGuildMembers(discordClient);
       const [history] = await dbPool.query(
         `SELECT change_type, old_status, new_status, change_summary, changed_at
            FROM task_history WHERE task_id = ? ORDER BY id DESC`,
@@ -652,12 +688,50 @@ async function startWebServer(dbPool, discordClient) {
                       </select>
                     </div>
                     <div class="field">
-                      <label>担当者のDiscord ID</label>
-                      <input name="assignee_id" value="${escapeHtml(task.assignee_id || '')}" pattern="\\d*" maxlength="32" placeholder="任意">
+                      <label>担当者</label>
+                      <select name="assignee_id">
+                        <option value="">未定</option>
+                        ${members
+                          .map(
+                            (m) =>
+                              `<option value="${escapeHtml(m.id)}"${m.id === task.assignee_id ? ' selected' : ''}>${escapeHtml(m.name)}</option>`
+                          )
+                          .join('')}
+                        ${
+                          // 現在の担当者がサーバーを抜けている等でリストに無い場合、選択が消えないよう追加しておく
+                          task.assignee_id && !members.some((m) => m.id === task.assignee_id)
+                            ? `<option value="${escapeHtml(task.assignee_id)}" selected>${escapeHtml(task.assignee_id)}（サーバーに見つかりません）</option>`
+                            : ''
+                        }
+                      </select>
                     </div>
                   </div>
+
+                  <div class="field">
+                    <label>メモ</label>
+                    <textarea name="notes" rows="6" maxlength="${NOTES_MAX_LENGTH}" placeholder="補足事項や引き継ぎ内容など">${escapeHtml(task.notes || '')}</textarea>
+                  </div>
+                  <div class="field" style="max-width:220px">
+                    <label>メモの形式</label>
+                    <select name="notes_format">
+                      <option value="plain"${task.notes_format !== 'markdown' ? ' selected' : ''}>プレーンテキスト</option>
+                      <option value="markdown"${task.notes_format === 'markdown' ? ' selected' : ''}>Markdown</option>
+                    </select>
+                  </div>
+
                   <button type="submit">保存</button>
                 </form>
+              </div>
+            </div>
+
+            <div class="card">
+              <h2>メモ</h2>
+              <div class="body">
+                ${
+                  task.notes
+                    ? renderNotes(task.notes, task.notes_format)
+                    : '<div class="notes-empty">メモはまだありません。</div>'
+                }
               </div>
             </div>
 
@@ -681,6 +755,10 @@ async function startWebServer(dbPool, discordClient) {
       const status = VALID_STATUSES.has(req.body.status) ? req.body.status : null;
       const projectId = req.body.project_id ? Number(req.body.project_id) : null;
       const assigneeId = safeDiscordId(req.body.assignee_id);
+      const notes = String(req.body.notes ?? '').slice(0, NOTES_MAX_LENGTH) || null;
+      const notesFormat = VALID_NOTES_FORMATS.has(req.body.notes_format)
+        ? req.body.notes_format
+        : 'plain';
       if (!title || !status) return res.redirect(`/tasks/${id}`);
 
       const conn = await dbPool.getConnection();
@@ -693,9 +771,18 @@ async function startWebServer(dbPool, discordClient) {
         }
         await conn.query(
           `UPDATE tasks
-              SET title = ?, status = ?, project_id = ?, assignee_id = ?, assignee_unconfirmed = FALSE
+              SET title = ?, status = ?, project_id = ?, assignee_id = ?, assignee_unconfirmed = FALSE,
+                  notes = ?, notes_format = ?
             WHERE id = ?`,
-          [title, status, Number.isFinite(projectId) ? projectId : null, assigneeId, id]
+          [
+            title,
+            status,
+            Number.isFinite(projectId) ? projectId : null,
+            assigneeId,
+            notes,
+            notesFormat,
+            id,
+          ]
         );
         if (current.status !== status) {
           await recordHistory(

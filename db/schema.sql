@@ -69,6 +69,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     INDEX idx_project_status (project_id, status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- 既存テーブルへのカラム追加。CREATE TABLEと同様、毎回の起動時に実行されても
+-- エラーにならないよう IF NOT EXISTS を付けている（MariaDB独自拡張）。
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS notes MEDIUMTEXT;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS notes_format ENUM('plain','markdown') NOT NULL DEFAULT 'plain';
+
 CREATE TABLE IF NOT EXISTS task_history (
     id                 BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     task_id            BIGINT UNSIGNED NOT NULL,

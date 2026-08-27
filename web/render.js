@@ -13,6 +13,12 @@
 //
 // DBから来る値はすべてユーザー入力由来なので、埋め込む前に必ず escapeHtml() を通すこと。
 
+const MarkdownIt = require('markdown-it');
+
+// html:false が要。メモ欄にユーザーが生のHTML/scriptタグを書いても
+// 文字列としてエスケープされるだけで、実行されるHTMLとしては解釈されない。
+const md = new MarkdownIt({ html: false, linkify: true, breaks: true });
+
 const STATUS_LABELS = {
   todo: '未着手',
   in_progress: '進行中',
@@ -34,6 +40,19 @@ function escapeHtml(value) {
 
 function statusLabel(status) {
   return STATUS_LABELS[status] ?? status;
+}
+
+/**
+ * タスクのメモを表示用HTMLへ変換する。
+ * markdown形式なら安全にレンダリングし（html:falseで生HTMLは無効化）、
+ * plain形式ならエスケープした上で改行を保ったまま表示する。
+ */
+function renderNotes(notes, format) {
+  if (!notes) return '';
+  if (format === 'markdown') {
+    return `<div class="notes-html">${md.render(notes)}</div>`;
+  }
+  return `<div class="notes-plain">${escapeHtml(notes)}</div>`;
 }
 
 function formatDate(value) {
@@ -303,6 +322,39 @@ label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 5px
   font-size: 14px; width: 100%; border: none; cursor: pointer;
 }
 .btn-discord:hover { filter: brightness(1.08); }
+
+/* --- メモ（プレーン／Markdown） --- */
+.notes-plain {
+  white-space: pre-wrap; word-break: break-word; font-size: 14px; line-height: 1.7;
+}
+.notes-html {
+  font-size: 14px; line-height: 1.7; word-break: break-word;
+}
+.notes-html :first-child { margin-top: 0; }
+.notes-html :last-child { margin-bottom: 0; }
+.notes-html h1, .notes-html h2, .notes-html h3 {
+  font-size: 1em; font-weight: 600; margin: 1em 0 .4em;
+}
+.notes-html h1 { font-size: 1.25em; }
+.notes-html h2 { font-size: 1.12em; }
+.notes-html p { margin: .5em 0; }
+.notes-html ul, .notes-html ol { margin: .5em 0; padding-left: 1.4em; }
+.notes-html li { margin: .2em 0; }
+.notes-html code {
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: 4px; padding: 1px 5px; font-size: .9em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.notes-html pre {
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: 8px; padding: 10px 12px; overflow-x: auto;
+}
+.notes-html pre code { background: none; border: none; padding: 0; }
+.notes-html blockquote {
+  margin: .5em 0; padding-left: 10px; border-left: 3px solid var(--border); color: var(--muted);
+}
+.notes-html a { color: var(--accent); text-decoration: underline; }
+.notes-empty { color: var(--muted); font-size: 13.5px; }
 
 /* --- モバイル --- */
 @media (max-width: 820px) {
@@ -595,6 +647,7 @@ module.exports = {
   taskList,
   taskItem,
   whoChip,
+  renderNotes,
   STATUS_ORDER,
   STATUS_LABELS,
 };
